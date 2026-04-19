@@ -20,7 +20,7 @@ from telegram.ext import (
 )
 
 # ---------- CONFIG ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8762654526:AAFvVEJsFhVJeCCSmlSI6dxLVDNtbe41sTQ)
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8762654526:AAFvVEJsFhVJeCCSmlSI6dxLVDNtbe41sTQ")
 DATA_DIR = "./user_data"
 MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
 TIMEOUT_SEC = 300                  # max run time per script (5 min)
