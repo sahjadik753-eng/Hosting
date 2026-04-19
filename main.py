@@ -10,7 +10,6 @@ import subprocess
 import time
 import resource
 import asyncio
-import shlex
 from pathlib import Path
 from datetime import datetime
 
@@ -21,7 +20,7 @@ from telegram.ext import (
 )
 
 # ---------- CONFIG ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8762654526:AAFvVEJsFhVJeCCSmlSI6dxLVDNtbe41sTQ")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8762654526:AAFvVEJsFhVJeCCSmlSI6dxLVDNtbe41sTQ)
 DATA_DIR = "./user_data"
 MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
 TIMEOUT_SEC = 300                  # max run time per script (5 min)
@@ -39,7 +38,7 @@ def set_limits():
     resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
-def get_command(file_path: Path) -> list:
+def get_command(file_path: Path):
     """Return shell command based on file extension."""
     ext = file_path.suffix.lower()
     if ext == '.py':
@@ -64,7 +63,7 @@ def get_command(file_path: Path) -> list:
         os.chmod(file_path, 0o755)
         return [str(file_path)]
 
-def run_script(user_id: int, file_path: Path) -> subprocess.Popen:
+def run_script(user_id: int, file_path: Path):
     """Start user script with resource limits."""
     cmd = get_command(file_path)
     if not cmd:
@@ -74,7 +73,7 @@ def run_script(user_id: int, file_path: Path) -> subprocess.Popen:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        preexec_fn=set_limits   # Unix only
+        preexec_fn=set_limits
     )
     running_procs[user_id] = {
         "proc": proc,
@@ -89,7 +88,6 @@ def get_logs(user_id: int, lines: int = 50) -> str:
     info = running_procs.get(user_id)
     if not info:
         return "No running process."
-    # Try to read new output
     try:
         stdout, stderr = info["proc"].communicate(timeout=0.01)
         if stdout:
@@ -98,7 +96,6 @@ def get_logs(user_id: int, lines: int = 50) -> str:
             info["log"].extend(stderr.splitlines())
     except subprocess.TimeoutExpired:
         pass
-    # Keep only last 200 lines
     if len(info["log"]) > 200:
         info["log"] = info["log"][-200:]
     return "\n".join(info["log"][-lines:])
@@ -112,7 +109,6 @@ def process_has_error(user_id: int) -> bool:
     poll = proc.poll()
     if poll is not None and poll != 0:
         return True
-    # Check stderr for common error patterns
     _, stderr = proc.communicate(timeout=0.1)
     if stderr:
         error_keywords = ["Error", "Exception", "Traceback", "SyntaxError", "FAILED", "Fatal"]
@@ -168,18 +164,28 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     doc = update.message.document
 
+    # Check if this is a "fix" upload
+    if context.user_data.get("awaiting_fix"):
+        context.user_data["awaiting_fix"] = False
+        # Stop existing process
+        if user_id in running_procs:
+            running_procs[user_id]["proc"].terminate()
+            time.sleep(1)
+            if running_procs[user_id]["proc"].poll() is None:
+                running_procs[user_id]["proc"].kill()
+            del running_procs[user_id]
+    else:
+        # Normal first-time upload – stop any previous process
+        if user_id in running_procs:
+            running_procs[user_id]["proc"].terminate()
+            time.sleep(1)
+            if running_procs[user_id]["proc"].poll() is None:
+                running_procs[user_id]["proc"].kill()
+            del running_procs[user_id]
+
     if doc.file_size > MAX_FILE_SIZE:
         await update.message.reply_text(f"❌ File too large. Max {MAX_FILE_SIZE//(1024*1024)} MB.")
         return
-
-    # Stop existing process for this user
-    if user_id in running_procs:
-        old = running_procs[user_id]["proc"]
-        old.terminate()
-        time.sleep(1)
-        if old.poll() is None:
-            old.kill()
-        del running_procs[user_id]
 
     status_msg = await update.message.reply_text("📥 Downloading your file...")
     file = await context.bot.get_file(doc.file_id)
@@ -189,7 +195,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(file_path)
 
     try:
-        proc = run_script(user_id, file_path)
+        run_script(user_id, file_path)
         await status_msg.edit_text(
             f"✅ *Script started successfully!*\n\n"
             f"📄 `{doc.file_name}`\n"
@@ -198,7 +204,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
             reply_markup=make_process_keyboard(user_id)
         )
-        # Start error monitoring
         asyncio.create_task(monitor_process(user_id, context))
     except Exception as e:
         await status_msg.edit_text(f"❌ Failed to start: {str(e)}")
@@ -209,7 +214,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user_id = query.from_user.id
 
-    # Extract action and target user (for fix button)
     if data.startswith("fix_"):
         target_user = int(data.split("_")[1])
         if target_user != user_id:
@@ -222,7 +226,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # For other buttons, target is current user
     if user_id not in running_procs:
         await query.edit_message_text("❌ No running process for you.")
         return
@@ -253,7 +256,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🛑 Process stopped.\nYou can upload a new file.", reply_markup=None)
 
     elif data.startswith("restart_"):
-        # Restart same file
         proc_info = running_procs[user_id]
         file_path = Path(DATA_DIR) / str(user_id) / proc_info["file"]
         # Kill old
@@ -263,7 +265,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             proc_info["proc"].kill()
         # Start new
         try:
-            new_proc = run_script(user_id, file_path)
+            run_script(user_id, file_path)
             await query.edit_message_text(
                 f"🔄 *Restarted* `{proc_info['file']}`",
                 parse_mode="Markdown",
@@ -308,44 +310,6 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("No running process.")
 
-async def fix_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """When user uploads a file after clicking Fix button, replace old file and restart."""
-    if not context.user_data.get("awaiting_fix"):
-        return  # not in fix mode – normal upload will be handled by handle_file
-    context.user_data["awaiting_fix"] = False
-    user_id = update.effective_user.id
-    doc = update.message.document
-
-    if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ File too large. Max {MAX_FILE_SIZE//(1024*1024)} MB.")
-        return
-
-    # Stop current process if any
-    if user_id in running_procs:
-        running_procs[user_id]["proc"].terminate()
-        time.sleep(1)
-        if running_procs[user_id]["proc"].poll() is None:
-            running_procs[user_id]["proc"].kill()
-        del running_procs[user_id]
-
-    status_msg = await update.message.reply_text("📥 Downloading fixed file...")
-    file = await context.bot.get_file(doc.file_id)
-    user_dir = Path(DATA_DIR) / str(user_id)
-    user_dir.mkdir(exist_ok=True)
-    file_path = user_dir / doc.file_name
-    await file.download_to_drive(file_path)
-
-    try:
-        run_script(user_id, file_path)
-        await status_msg.edit_text(
-            f"✅ *Fixed script started!*\n\n📄 `{doc.file_name}`\nUse buttons to manage.",
-            parse_mode="Markdown",
-            reply_markup=make_process_keyboard(user_id)
-        )
-        asyncio.create_task(monitor_process(user_id, context))
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Failed: {str(e)}")
-
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -354,13 +318,6 @@ def main():
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(CallbackQueryHandler(button_callback, pattern="^(status_|logs_|stop_|restart_|fix_)"))
-
-    # Special handler for fix upload – must come before generic file handler
-    # But we already have a generic file handler. We'll check the "awaiting_fix" flag inside it.
-    # Actually we need a separate handler that runs only when awaiting_fix is True.
-    # Easiest: modify handle_file to check flag and act accordingly.
-    # I'll just replace handle_file with logic that checks flag first.
-    # For simplicity, I'll override the MessageHandler to use a wrapper.
 
     print("🤖 Bot started (exact @JERRY_HOSTING_bot clone). Credit: ADIL")
     app.run_polling()
